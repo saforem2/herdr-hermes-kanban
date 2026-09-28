@@ -1,0 +1,39 @@
+id = "hermes-kanban"
+name = "Hermes Kanban"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Terminal board and safe quick capture for Hermes Kanban"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["./scripts/build.sh"]
+
+[[panes]]
+id = "board"
+title = "Hermes Kanban"
+description = "Browse and update Hermes Kanban boards"
+placement = "tab"
+command = ["./bin/herdr-kanban", "board"]
+
+[[panes]]
+id = "capture"
+title = "Capture to triage"
+description = "Create an unassigned Hermes Kanban triage task"
+placement = "popup"
+width = "70%"
+height = 9
+command = ["./bin/herdr-kanban", "capture"]
+
+[[actions]]
+id = "open-board"
+title = "Open Hermes Kanban"
+description = "Open the board in a regular Herdr tab"
+contexts = ["global", "workspace", "pane"]
+command = ["./bin/herdr-kanban", "open", "board"]
+
+[[actions]]
+id = "quick-capture"
+title = "Capture thought to triage"
+description = "Open an unassigned triage capture popup"
+contexts = ["global", "workspace", "pane"]
+command = ["./bin/herdr-kanban", "open", "capture"]
