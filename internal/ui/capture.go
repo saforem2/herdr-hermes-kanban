@@ -11,14 +11,15 @@ import (
 )
 
 type CaptureModel struct {
-	ctx     context.Context
-	service Service
-	boards  []kanban.Board
-	board   int
-	input   textinput.Model
-	err     error
-	pending tea.Cmd
-	done    bool
+	ctx       context.Context
+	service   Service
+	boards    []kanban.Board
+	board     int
+	input     textinput.Model
+	err       error
+	pending   tea.Cmd
+	createKey string
+	done      bool
 }
 
 func NewCaptureModel(ctx context.Context, s Service) CaptureModel {
@@ -52,8 +53,12 @@ func (m CaptureModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = nil
 	case changedMsg:
 		m.done = true
+		m.createKey = ""
 		return m, tea.Quit
 	case tea.KeyMsg:
+		if m.pending != nil {
+			return m, nil
+		}
 		switch x.String() {
 		case "esc", "ctrl+c":
 			return m, tea.Quit
@@ -73,8 +78,12 @@ func (m CaptureModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			board := m.boardSlug()
+			if m.createKey == "" {
+				m.createKey = newIdempotencyKey()
+			}
+			key := m.createKey
 			m.pending = func() tea.Msg {
-				_, e := m.service.CreateTriage(m.ctx, board, title, "")
+				_, e := m.service.CreateTriage(m.ctx, board, title, "", key)
 				if e != nil {
 					return failureMsg(e)
 				}
@@ -85,6 +94,7 @@ func (m CaptureModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.input.SetValue(sanitize(m.input.Value()))
 	return m, cmd
 }
 func (m CaptureModel) boardSlug() string {
@@ -99,7 +109,7 @@ func (m CaptureModel) View() string {
 	}
 	err := ""
 	if m.err != nil {
-		err = "\n" + errorStyle.Render(m.err.Error())
+		err = "\n" + errorStyle.Render(sanitize(m.err.Error()))
 	}
-	return fmt.Sprintf("%s\n%s\n%s%s\n", headerStyle.Render("Quick capture → unassigned triage"), dimStyle.Render("board: "+m.boardSlug()+"  tab switches"), m.input.View(), err)
+	return fmt.Sprintf("%s\n%s\n%s%s\n", headerStyle.Render("Quick capture → unassigned triage"), dimStyle.Render("board: "+sanitizeLine(m.boardSlug())+"  tab switches"), m.input.View(), err)
 }

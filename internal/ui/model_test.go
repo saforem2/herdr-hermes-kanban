@@ -2,9 +2,13 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/saforem2/herdr-hermes-kanban/internal/kanban"
 )
 
@@ -14,6 +18,8 @@ type fakeService struct {
 	createdTitle, createdBody, createdBoard string
 	comment                                 string
 	transition                              string
+	createKeys                              []string
+	createCalls, commentCalls, transitCalls int
 }
 
 func (f *fakeService) Boards(context.Context) ([]kanban.Board, error)      { return f.boards, nil }
@@ -21,17 +27,21 @@ func (f *fakeService) List(context.Context, string) ([]kanban.Task, error) { ret
 func (f *fakeService) Show(context.Context, string, string) (kanban.Detail, error) {
 	return kanban.Detail{Task: f.tasks[0]}, nil
 }
-func (f *fakeService) CreateTriage(_ context.Context, b, t, body string) ([]byte, error) {
+func (f *fakeService) CreateTriage(_ context.Context, b, t, body, key string) ([]byte, error) {
+	f.createCalls++
+	f.createKeys = append(f.createKeys, key)
 	f.createdBoard = b
 	f.createdTitle = t
 	f.createdBody = body
 	return nil, nil
 }
 func (f *fakeService) Comment(_ context.Context, _, _, text string) ([]byte, error) {
+	f.commentCalls++
 	f.comment = text
 	return nil, nil
 }
 func (f *fakeService) Transition(_ context.Context, _, _, _, status, _ string) ([]byte, error) {
+	f.transitCalls++
 	f.transition = status
 	return nil, nil
 }
@@ -99,11 +109,135 @@ func TestQuickCaptureSubmitsUnassignedTriage(t *testing.T) {
 	}
 }
 
+func TestQuickCaptureRepeatedEnterWhilePendingSubmitsOnce(t *testing.T) {
+	f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}}
+	var model tea.Model = NewCaptureModel(context.Background(), f)
+	model, _ = model.Update(boardsLoadedMsg(f.boards))
+	model = send(model, "thought", "enter")
+	cmd := model.(CaptureModel).pending
+	model = send(model, "enter", "enter")
+	cmd()
+	if f.createCalls != 1 {
+		t.Fatalf("create ran %d times", f.createCalls)
+	}
+}
+
 func TestSafeTransitionsExcludeRunning(t *testing.T) {
-	for _, status := range SafeTransitions("todo") {
-		if status == "running" {
-			t.Fatal("running must never be manually selected")
+	want := map[string][]string{
+		"triage": nil, "todo": {"ready"},
+		"ready":   {"review", "done"},
+		"running": nil, "blocked": {"ready", "done"},
+		"scheduled": {"ready"}, "review": {"done"}, "done": nil,
+	}
+	for from, targets := range want {
+		if got := SafeTransitions(from); !reflect.DeepEqual(got, targets) {
+			t.Errorf("%s: got %v, want %v", from, got, targets)
 		}
+	}
+}
+
+func TestRepeatedEnterWhilePendingDoesNotDuplicateMutations(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(tea.Model) tea.Model
+		calls func(*fakeService) int
+	}{
+		{"create", func(m tea.Model) tea.Model { return send(m, "n", "one", "enter", "body", "enter") }, func(f *fakeService) int { return f.createCalls }},
+		{"comment", func(m tea.Model) tea.Model { return send(m, "c", "note", "enter") }, func(f *fakeService) int { return f.commentCalls }},
+		{"transition", func(m tea.Model) tea.Model { return send(m, "s", "ready", "enter") }, func(f *fakeService) int { return f.transitCalls }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}, tasks: []kanban.Task{{ID: "t1", Status: "todo"}}}
+			var model tea.Model = NewBoardModel(context.Background(), f)
+			model, _ = model.Update(boardsLoadedMsg(f.boards))
+			model, _ = model.Update(tasksLoadedMsg(f.tasks))
+			model = send(model, "right")
+			model = tt.setup(model)
+			first := model.(BoardModel).pending
+			model = send(model, "enter", "enter")
+			if model.(BoardModel).pending == nil {
+				t.Fatal("pending command was cleared")
+			}
+			first()
+			if got := tt.calls(f); got != 1 {
+				t.Fatalf("mutation ran %d times", got)
+			}
+		})
+	}
+}
+
+func TestCreateIdempotencyKeyIsStableForSubmission(t *testing.T) {
+	f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}}
+	var model tea.Model = NewBoardModel(context.Background(), f)
+	model, _ = model.Update(boardsLoadedMsg(f.boards))
+	model = send(model, "n", "one", "enter", "body", "enter")
+	cmd := model.(BoardModel).pending
+	cmd()
+	cmd()
+	if len(f.createKeys) != 2 || f.createKeys[0] == "" || f.createKeys[0] != f.createKeys[1] {
+		t.Fatalf("unstable idempotency keys: %v", f.createKeys)
+	}
+}
+
+func TestViewSanitizesUntrustedTerminalControls(t *testing.T) {
+	evil := "safe\x1b]52;c;owned\a\x1b[31m\rBAD\x00\nINJECT	TAB"
+	f := &fakeService{boards: []kanban.Board{{Slug: "alpha" + evil, Current: true}}, tasks: []kanban.Task{{ID: "t1" + evil, Title: "title" + evil, Body: "body" + evil, Status: "triage"}}}
+	m := NewBoardModel(context.Background(), f)
+	m.boards, m.tasks = f.boards, f.tasks
+	d := kanban.Detail{Task: f.tasks[0], Comments: []kanban.Comment{{Author: "author" + evil, Body: "comment" + evil}}}
+	m.detail, m.err = &d, fmt.Errorf("error%s", evil)
+	view := m.View()
+	if strings.ContainsAny(view, "\x00\r\a") || strings.Contains(view, "\x1b]52") || strings.Contains(view, "\x1b[31m") {
+		t.Fatalf("unsafe control sequence rendered: %q", view)
+	}
+	if strings.Contains(view, "alpha safe\n") || strings.Contains(view, "author safe\n") || strings.Contains(view, "t1 safe\n") {
+		t.Fatalf("single-line field injected a newline: %q", view)
+	}
+}
+
+func TestViewportKeepsSelectedColumnAndRowVisible(t *testing.T) {
+	f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}}
+	for i := 0; i < 20; i++ {
+		f.tasks = append(f.tasks, kanban.Task{ID: fmt.Sprintf("t%d", i), Title: fmt.Sprintf("card-%d", i), Status: "done"})
+	}
+	m := NewBoardModel(context.Background(), f)
+	m.boards, m.tasks, m.width, m.height, m.col, m.row = f.boards, f.tasks, 50, 12, 7, 19
+	view := m.View()
+	if !strings.Contains(view, "done (20)") || !strings.Contains(view, "card-19") || strings.Contains(view, "triage (0)") {
+		t.Fatalf("viewport missed selection:\n%s", view)
+	}
+}
+
+func TestDetailViewportPagesLongContent(t *testing.T) {
+	m := NewBoardModel(context.Background(), &fakeService{})
+	m.boards = []kanban.Board{{Slug: "alpha", Current: true}}
+	m.height = 12
+	d := kanban.Detail{Task: kanban.Task{Body: "line-0\nline-1\nline-2\nline-3\nline-4\nline-5"}}
+	m.detail = &d
+	before := m.View()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	after := next.(BoardModel).View()
+	if !strings.Contains(before, "line-0") || strings.Contains(before, "line-5") || strings.Contains(after, "line-0") || !strings.Contains(after, "line-5") {
+		t.Fatalf("detail did not page; before=%q after=%q", before, after)
+	}
+}
+
+func TestViewFitsConfiguredViewport(t *testing.T) {
+	f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}}
+	for i := 0; i < 20; i++ {
+		f.tasks = append(f.tasks, kanban.Task{ID: fmt.Sprintf("t%d", i), Title: strings.Repeat("x", 80), Status: "triage"})
+	}
+	m := NewBoardModel(context.Background(), f)
+	m.boards, m.tasks, m.width, m.height = f.boards, f.tasks, 46, 12
+	view := m.View()
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > m.width {
+			t.Fatalf("line width %d exceeds %d: %q", ansi.StringWidth(line), m.width, line)
+		}
+	}
+	if len(strings.Split(view, "\n")) > m.height {
+		t.Fatalf("view height exceeds %d:\n%s", m.height, view)
 	}
 }
 

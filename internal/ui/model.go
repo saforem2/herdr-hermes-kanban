@@ -2,12 +2,15 @@ package ui
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/saforem2/herdr-hermes-kanban/internal/kanban"
 )
 
@@ -45,7 +48,9 @@ type BoardModel struct {
 	mode          mode
 	input         textinput.Model
 	draftTitle    string
+	createKey     string
 	detail        *kanban.Detail
+	detailOffset  int
 	err           error
 	status        string
 	pending       tea.Cmd
@@ -148,6 +153,7 @@ func (m BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailLoadedMsg:
 		d := kanban.Detail(x)
 		m.detail = &d
+		m.detailOffset = 0
 		m.err = nil
 	case failureMsg:
 		m.err = error(x)
@@ -156,8 +162,12 @@ func (m BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeBoard
 		m.input.SetValue("")
 		m.pending = nil
+		m.createKey = ""
 		return m, m.loadTasks()
 	case tea.KeyMsg:
+		if m.pending != nil {
+			return m, nil
+		}
 		if m.mode != modeBoard {
 			return m.updateInput(x)
 		}
@@ -188,6 +198,10 @@ func (m BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.row++
 			}
 			m.detail = nil
+		case "pgup":
+			m.detailOffset = max(0, m.detailOffset-max(1, m.height/3))
+		case "pgdown":
+			m.detailOffset += max(1, m.height/3)
 		case "[":
 			if len(m.boards) > 0 {
 				m.board = (m.board - 1 + len(m.boards)) % len(m.boards)
@@ -205,6 +219,7 @@ func (m BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m, m.loadDetail()
 		case "n":
+			m.createKey = ""
 			m.mode = modeCreateTitle
 			m.input.Placeholder = "task title"
 			m.input.Focus()
@@ -215,9 +230,9 @@ func (m BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.Focus()
 			}
 		case "s":
-			if _, ok := m.selected(); ok {
+			if t, ok := m.selected(); ok && len(SafeTransitions(t.Status)) > 0 {
 				m.mode = modeTransition
-				m.input.Placeholder = "status: " + strings.Join(SafeTransitions(m.columnTasks()[m.row].Status), ", ")
+				m.input.Placeholder = "status: " + strings.Join(SafeTransitions(t.Status), ", ")
 				m.input.Focus()
 			}
 		}
@@ -229,6 +244,7 @@ func (m BoardModel) updateInput(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Type == tea.KeyEsc {
 		m.mode = modeBoard
 		m.input.SetValue("")
+		m.createKey = ""
 		return m, nil
 	}
 	if key.Type == tea.KeyEnter {
@@ -245,11 +261,15 @@ func (m BoardModel) updateInput(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case modeCreateBody:
 			title, body, board := m.draftTitle, value, m.boardSlug()
+			if m.createKey == "" {
+				m.createKey = newIdempotencyKey()
+			}
+			key := m.createKey
 			if body == "-" {
 				body = ""
 			}
 			m.pending = func() tea.Msg {
-				_, e := m.service.CreateTriage(m.ctx, board, title, body)
+				_, e := m.service.CreateTriage(m.ctx, board, title, body, key)
 				if e != nil {
 					return failureMsg(e)
 				}
@@ -287,6 +307,7 @@ func (m BoardModel) updateInput(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(key)
+	m.input.SetValue(sanitize(m.input.Value()))
 	return m, cmd
 }
 func has(v []string, s string) bool {
@@ -302,20 +323,33 @@ func (m BoardModel) View() string {
 		return "Hermes Kanban\n\nLoading boards…"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  board: %s  %s\n\n", headerStyle.Render("Hermes Kanban"), m.boardSlug(), dimStyle.Render("[ / ] switch"))
+	header := fmt.Sprintf("%s  board: %s  %s", headerStyle.Render("Hermes Kanban"), sanitizeLine(m.boardSlug()), dimStyle.Render("[ / ] switch"))
+	b.WriteString(ansi.Truncate(header, max(1, m.width), "…") + "\n\n")
 	columnWidth := 22
-	if m.width > 0 && m.width/len(Columns) > columnWidth {
-		columnWidth = m.width / len(Columns)
+	if m.width > 0 && m.width/len(Columns) > columnWidth+1 {
+		columnWidth = m.width/len(Columns) - 1
 	}
-	panels := make([]string, 0, len(Columns))
-	for ci, col := range Columns {
+	firstCol, lastCol := visibleColumns(m.col, m.width, columnWidth)
+	panels := make([]string, 0, lastCol-firstCol)
+	for ci := firstCol; ci < lastCol; ci++ {
+		col := Columns[ci]
 		style := headerStyle
 		if ci == m.col {
 			style = activeStyle
 		}
 		cards := []string{style.Render(fmt.Sprintf("%s (%d)", col, countStatus(m.tasks, col)))}
+		visibleRows := max(1, (m.height-5)/3)
+		startRow := 0
+		if ci == m.col {
+			startRow = max(0, m.row-visibleRows+1)
+		}
+		row := 0
 		for _, t := range m.tasks {
 			if t.Status == col {
+				if row < startRow || row >= startRow+visibleRows {
+					row++
+					continue
+				}
 				mark := "  "
 				if ci == m.col {
 					selected, _ := m.selected()
@@ -323,7 +357,8 @@ func (m BoardModel) View() string {
 						mark = "> "
 					}
 				}
-				cards = append(cards, mark+lipgloss.NewStyle().MaxWidth(columnWidth-2).Render(t.Title), dimStyle.Render("  "+t.ID))
+				cards = append(cards, mark+lipgloss.NewStyle().MaxWidth(columnWidth-2).Render(sanitizeLine(t.Title)), dimStyle.Render("  "+sanitizeLine(t.ID)))
+				row++
 			}
 		}
 		if len(cards) == 1 {
@@ -334,18 +369,24 @@ func (m BoardModel) View() string {
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panels...))
 	b.WriteString("\n\n")
 	if m.detail != nil {
-		fmt.Fprintf(&b, "%s\n%s\n", headerStyle.Render("Details"), m.detail.Task.Body)
+		detailLines := []string{sanitize(m.detail.Task.Body)}
 		for _, c := range m.detail.Comments {
-			fmt.Fprintf(&b, "  %s: %s\n", c.Author, c.Body)
+			detailLines = append(detailLines, "  "+sanitize(c.Author)+": "+sanitize(c.Body))
 		}
+		detailLines = strings.Split(strings.Join(detailLines, "\n"), "\n")
+		page := max(1, m.height/3)
+		maxOffset := max(0, len(detailLines)-page)
+		offset := min(m.detailOffset, maxOffset)
+		fmt.Fprintf(&b, "%s\n%s\n", headerStyle.Render("Details"), strings.Join(detailLines[offset:min(len(detailLines), offset+page)], "\n"))
 	}
 	if m.mode != modeBoard {
 		fmt.Fprintf(&b, "\n%s\n", m.input.View())
 	}
 	if m.err != nil {
-		fmt.Fprintf(&b, "\n%s\n", errorStyle.Render(m.err.Error()))
+		fmt.Fprintf(&b, "\n%s\n", errorStyle.Render(sanitize(m.err.Error())))
 	}
-	b.WriteString(dimStyle.Render("h/l columns  j/k cards  enter details  n new triage  c comment  s status  r refresh  q quit"))
+	help := "h/l columns  j/k cards  enter details  pgup/pgdown details  n new triage  c comment  s status  r refresh  q quit"
+	b.WriteString(dimStyle.Render(ansi.Truncate(help, max(1, m.width), "…")))
 	return b.String()
 }
 
@@ -357,4 +398,40 @@ func countStatus(tasks []kanban.Task, status string) int {
 		}
 	}
 	return n
+}
+
+func visibleColumns(selected, width, columnWidth int) (int, int) {
+	count := len(Columns)
+	if width > 0 {
+		count = max(1, min(count, width/(columnWidth+1)))
+	}
+	start := max(0, min(selected-count/2, len(Columns)-count))
+	return start, start + count
+}
+
+func sanitize(s string) string {
+	s = ansi.Strip(s)
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '	' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
+func sanitizeLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, sanitize(s))
+}
+
+func newIdempotencyKey() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return fmt.Sprintf("herdr-kanban-%x", raw[:])
 }

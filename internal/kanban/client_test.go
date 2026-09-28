@@ -26,6 +26,8 @@ func TestHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.WriteString(`[{"slug":"alpha","name":"Alpha","description":"work","icon":"","color":"","default_workdir":null,"project_id":null,"created_at":null,"archived":false,"db_path":"/hidden","is_current":true,"counts":{"triage":1},"total":1}]`)
 	case "show":
 		_, _ = os.Stdout.WriteString(`{"task":{"id":"t_1","title":"one","status":"triage"},"comments":[{"author":"sam","body":"note","created_at":124}],"events":[],"parents":[],"children":[],"runs":[]}`)
+	case "future":
+		_, _ = os.Stdout.WriteString(`[{"id":"t_1","title":"one","status":"triage","future_field":{"nested":true}}]`)
 	case "large":
 		_, _ = os.Stdout.WriteString(strings.Repeat("x", 4096))
 	case "fail":
@@ -67,13 +69,13 @@ func TestListUsesBoardAndParsesTasks(t *testing.T) {
 	}
 }
 
-func TestCreateTriageIsUnassignedAndUsesArgv(t *testing.T) {
+func TestCreateTriageUsesSafeArgvStdinAndIdempotency(t *testing.T) {
 	client := fakeClient(t, "capture")
-	out, err := client.CreateTriage(context.Background(), "alpha", "title; touch /tmp/nope", "body")
+	out, err := client.CreateTriage(context.Background(), "alpha", "--title", "--body\nnext", "submit-123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"kanban", "--board", "alpha", "create", "title; touch /tmp/nope", "--triage", "--body", "body", "--json"}
+	want := []string{"kanban", "--board", "alpha", "create", "--triage", "--body-file", "-", "--idempotency-key", "submit-123", "--json", "--", "--title"}
 	if !reflect.DeepEqual(strings.Split(string(out), "\x1f"), want) {
 		t.Fatalf("argv mismatch: %q", out)
 	}
@@ -99,12 +101,12 @@ func TestShowAcceptsNestedTaskShape(t *testing.T) {
 	}
 }
 
-func TestCommentUsesLiteralArguments(t *testing.T) {
-	out, err := fakeClient(t, "capture").Comment(context.Background(), "alpha", "t_1", "$(bad)")
+func TestCommentUsesEndOfOptionsForFlagLikeText(t *testing.T) {
+	out, err := fakeClient(t, "capture").Comment(context.Background(), "alpha", "t_1", "--force")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "kanban\x1f--board\x1falpha\x1fcomment\x1ft_1\x1f$(bad)\x1f--author\x1fherdr-kanban"
+	want := "kanban\x1f--board\x1falpha\x1fcomment\x1f--author\x1fherdr-kanban\x1f--\x1ft_1\x1f--force"
 	if string(out) != want {
 		t.Fatalf("got %q", out)
 	}
@@ -116,7 +118,7 @@ func TestTransitionAllowlistAndArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "kanban\x1f--board\x1falpha\x1fpromote\x1ft_1\x1freviewed\x1f--json"
+	want := "kanban\x1f--board\x1falpha\x1fpromote\x1f--json\x1f--\x1ft_1\x1freviewed"
 	if string(out) != want {
 		t.Fatalf("got %q", out)
 	}
@@ -131,9 +133,25 @@ func TestTransitionUnblocksBlockedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "kanban\x1f--board\x1falpha\x1funblock\x1ft_1\x1f--reason\x1ffixed"
+	want := "kanban\x1f--board\x1falpha\x1funblock\x1f--reason\x1ffixed\x1f--\x1ft_1"
 	if string(out) != want {
 		t.Fatalf("got %q", out)
+	}
+}
+
+func TestTransitionRejectsUnsupportedSourceTargetPairs(t *testing.T) {
+	client := fakeClient(t, "capture")
+	for _, pair := range [][2]string{{"triage", "ready"}, {"triage", "blocked"}, {"triage", "scheduled"}, {"todo", "blocked"}, {"todo", "scheduled"}, {"ready", "blocked"}, {"ready", "scheduled"}, {"blocked", "scheduled"}, {"running", "blocked"}, {"running", "review"}, {"running", "done"}} {
+		if _, err := client.Transition(context.Background(), "alpha", "t_1", pair[0], pair[1], "reason"); !errors.Is(err, ErrUnsafeTransition) {
+			t.Errorf("%s -> %s: expected unsafe transition, got %v", pair[0], pair[1], err)
+		}
+	}
+}
+
+func TestDecodeAllowsUnknownHermesFields(t *testing.T) {
+	tasks, err := fakeClient(t, "future").List(context.Background(), "alpha")
+	if err != nil || len(tasks) != 1 || tasks[0].ID != "t_1" {
+		t.Fatalf("forward-compatible decode failed: %#v, %v", tasks, err)
 	}
 }
 

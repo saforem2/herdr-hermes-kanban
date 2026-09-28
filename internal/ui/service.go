@@ -10,7 +10,7 @@ type Service interface {
 	Boards(context.Context) ([]kanban.Board, error)
 	List(context.Context, string) ([]kanban.Task, error)
 	Show(context.Context, string, string) (kanban.Detail, error)
-	CreateTriage(context.Context, string, string, string) ([]byte, error)
+	CreateTriage(context.Context, string, string, string, string) ([]byte, error)
 	Comment(context.Context, string, string, string) ([]byte, error)
 	Transition(context.Context, string, string, string, string, string) ([]byte, error)
 }
@@ -19,16 +19,16 @@ var Columns = kanban.StatusColumns
 
 func SafeTransitions(from string) []string {
 	switch from {
-	case "triage", "todo":
-		return []string{"ready", "blocked", "scheduled"}
+	case "todo":
+		return []string{"ready"}
 	case "ready":
-		return []string{"blocked", "scheduled", "done"}
-	case "running":
-		return []string{"blocked", "review", "done"}
-	case "blocked", "scheduled":
+		return []string{"review", "done"}
+	case "blocked":
 		return []string{"ready", "done"}
+	case "scheduled":
+		return []string{"ready"}
 	case "review":
-		return []string{"todo", "done"}
+		return []string{"done"}
 	default:
 		return nil
 	}
