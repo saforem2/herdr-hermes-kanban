@@ -3,8 +3,11 @@ package ui
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -357,7 +360,14 @@ func (m BoardModel) View() string {
 						mark = "> "
 					}
 				}
-				cards = append(cards, mark+lipgloss.NewStyle().MaxWidth(columnWidth-2).Render(sanitizeLine(t.Title)), dimStyle.Render("  "+sanitizeLine(t.ID)))
+				meta := "  " + sanitizeLine(t.ID)
+				if t.Assignee != nil && *t.Assignee != "" {
+					meta = "  @" + sanitizeLine(*t.Assignee)
+				}
+				if t.CurrentStepKey != nil && *t.CurrentStepKey != "" {
+					meta += " ↳ " + sanitizeLine(*t.CurrentStepKey)
+				}
+				cards = append(cards, mark+lipgloss.NewStyle().MaxWidth(columnWidth-2).Render(sanitizeLine(t.Title)), dimStyle.Render(ansi.Truncate(meta, columnWidth-2, "…")))
 				row++
 			}
 		}
@@ -369,11 +379,12 @@ func (m BoardModel) View() string {
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panels...))
 	b.WriteString("\n\n")
 	if m.detail != nil {
-		detailLines := []string{sanitize(m.detail.Task.Body)}
-		for _, c := range m.detail.Comments {
-			detailLines = append(detailLines, "  "+sanitize(c.Author)+": "+sanitize(c.Body))
+		detailLines := renderDetail(*m.detail)
+		if m.width > 0 {
+			for i := range detailLines {
+				detailLines[i] = ansi.Truncate(detailLines[i], m.width, "…")
+			}
 		}
-		detailLines = strings.Split(strings.Join(detailLines, "\n"), "\n")
 		page := max(1, m.height/3)
 		maxOffset := max(0, len(detailLines)-page)
 		offset := min(m.detailOffset, maxOffset)
@@ -388,6 +399,135 @@ func (m BoardModel) View() string {
 	help := "h/l columns  j/k cards  enter details  pgup/pgdown details  n new triage  c comment  s status  r refresh  q quit"
 	b.WriteString(dimStyle.Render(ansi.Truncate(help, max(1, m.width), "…")))
 	return b.String()
+}
+
+func renderDetail(d kanban.Detail) []string {
+	t := d.Task
+	assignee := "unassigned"
+	if t.Assignee != nil && *t.Assignee != "" {
+		assignee = *t.Assignee
+	}
+	lines := []string{
+		headerStyle.Render("Task"),
+		fmt.Sprintf("  %s  %s  [%s]", sanitizeLine(orDash(t.ID)), sanitizeLine(orDash(t.Title)), sanitizeLine(orDash(t.Status))),
+		headerStyle.Render("Assignment"),
+		fmt.Sprintf("  assignee: %s  created by: %s", sanitizeLine(assignee), sanitizeLine(orDash(t.CreatedBy))),
+		fmt.Sprintf("  session: %s  project: %s", ptrText(t.SessionID), ptrText(t.ProjectID)),
+		fmt.Sprintf("  workspace: %s%s  branch: %s", sanitizeLine(orDash(t.WorkspaceKind)), optionalAt(t.WorkspacePath), ptrText(t.BranchName)),
+		headerStyle.Render("Progress"),
+		fmt.Sprintf("  status: %s  step: %s", sanitizeLine(orDash(t.Status)), ptrText(t.CurrentStepKey)),
+	}
+	if t.StartedAt != nil {
+		lines = append(lines, "  started: "+formatTime(*t.StartedAt))
+	}
+	if t.CompletedAt != nil {
+		lines = append(lines, "  completed: "+formatTime(*t.CompletedAt))
+	}
+	if t.Result != nil {
+		lines = append(lines, "  result: "+sanitize(*t.Result))
+	}
+	if t.LastFailureError != nil {
+		lines = append(lines, "  failure: "+sanitize(*t.LastFailureError))
+	}
+	if d.LatestSummary != nil {
+		lines = append(lines, "  latest: "+sanitize(*d.LatestSummary))
+	}
+	lines = append(lines, headerStyle.Render("Chain"), "  "+renderChain(d.Parents, t.ID, d.Children))
+	if t.Body != "" {
+		lines = append(lines, headerStyle.Render("Body"), sanitize(t.Body))
+	}
+	if len(d.Comments) > 0 {
+		lines = append(lines, headerStyle.Render(fmt.Sprintf("Comments (%d)", len(d.Comments))))
+		for _, c := range d.Comments {
+			lines = append(lines, fmt.Sprintf("  [%s] %s: %s", formatTime(c.CreatedAt), sanitizeLine(c.Author), sanitize(c.Body)))
+		}
+	}
+	lines = append(lines, headerStyle.Render("Audit timeline"))
+	type audit struct {
+		at   int64
+		text string
+	}
+	items := make([]audit, 0, len(d.Events)+len(d.Runs))
+	for _, e := range d.Events {
+		run := ""
+		if e.RunID != nil {
+			run = fmt.Sprintf(" [run #%d]", *e.RunID)
+		}
+		items = append(items, audit{e.CreatedAt, fmt.Sprintf("  [%s]%s event %s%s", formatTime(e.CreatedAt), run, sanitizeLine(e.Kind), renderMap(e.Payload))})
+	}
+	for _, r := range d.Runs {
+		text := fmt.Sprintf("  [%s] run #%d %s %s", formatTime(r.StartedAt), r.ID, sanitizeLine(r.Profile), sanitizeLine(r.Status))
+		if r.StepKey != nil {
+			text += " step=" + sanitizeLine(*r.StepKey)
+		}
+		if r.Outcome != nil {
+			text += " → " + sanitizeLine(*r.Outcome)
+		}
+		if r.EndedAt != nil {
+			text += " ended=" + formatTime(*r.EndedAt)
+		}
+		if r.WorkerPID != nil {
+			text += fmt.Sprintf(" pid=%d", *r.WorkerPID)
+		}
+		if r.Summary != nil {
+			text += ": " + sanitize(*r.Summary)
+		}
+		if r.Error != nil {
+			text += " error=" + sanitize(*r.Error)
+		}
+		text += renderMap(r.Metadata)
+		items = append(items, audit{r.StartedAt, text})
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].at < items[j].at })
+	for _, item := range items {
+		lines = append(lines, item.text)
+	}
+	return strings.Split(strings.Join(lines, "\n"), "\n")
+}
+
+func ptrText(v *string) string {
+	if v == nil || *v == "" {
+		return "-"
+	}
+	return sanitizeLine(*v)
+}
+func orDash(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
+}
+func optionalAt(v *string) string {
+	if v == nil || *v == "" {
+		return ""
+	}
+	return " @ " + sanitizeLine(*v)
+}
+func formatTime(v int64) string {
+	if v == 0 {
+		return "-"
+	}
+	return time.Unix(v, 0).Local().Format("2006-01-02 15:04:05")
+}
+func renderChain(parents []string, task string, children []string) string {
+	left, right := "∅", "∅"
+	if len(parents) > 0 {
+		left = strings.Join(parents, ", ")
+	}
+	if len(children) > 0 {
+		right = strings.Join(children, ", ")
+	}
+	return sanitizeLine(left) + " → " + sanitizeLine(orDash(task)) + " → " + sanitizeLine(right)
+}
+func renderMap(v map[string]any) string {
+	if len(v) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return " " + sanitizeLine(string(raw))
 }
 
 func countStatus(tasks []kanban.Task, status string) int {

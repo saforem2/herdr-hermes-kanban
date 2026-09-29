@@ -186,6 +186,10 @@ func TestViewSanitizesUntrustedTerminalControls(t *testing.T) {
 	m := NewBoardModel(context.Background(), f)
 	m.boards, m.tasks = f.boards, f.tasks
 	d := kanban.Detail{Task: f.tasks[0], Comments: []kanban.Comment{{Author: "author" + evil, Body: "comment" + evil}}}
+	runSummary, runError := "summary"+evil, "run-error"+evil
+	d.LatestSummary = &runSummary
+	d.Events = []kanban.Event{{Kind: "event" + evil, Payload: map[string]any{"evil": evil}}}
+	d.Runs = []kanban.Run{{ID: 1, Profile: "profile" + evil, Status: "failed", Summary: &runSummary, Error: &runError, Metadata: map[string]any{"evil": evil}}}
 	m.detail, m.err = &d, fmt.Errorf("error%s", evil)
 	view := m.View()
 	if strings.ContainsAny(view, "\x00\r\a") || strings.Contains(view, "\x1b]52") || strings.Contains(view, "\x1b[31m") {
@@ -216,12 +220,51 @@ func TestDetailViewportPagesLongContent(t *testing.T) {
 	d := kanban.Detail{Task: kanban.Task{Body: "line-0\nline-1\nline-2\nline-3\nline-4\nline-5"}}
 	m.detail = &d
 	before := m.View()
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	var next tea.Model = m
+	for range 5 {
+		next, _ = next.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
 	after := next.(BoardModel).View()
-	if !strings.Contains(before, "line-0") || strings.Contains(before, "line-5") || strings.Contains(after, "line-0") || !strings.Contains(after, "line-5") {
+	if strings.Contains(after, "line-0") || !strings.Contains(after, "line-5") {
 		t.Fatalf("detail did not page; before=%q after=%q", before, after)
 	}
 }
+
+func TestDetailRendersProvenanceChainProgressAndAuditTimeline(t *testing.T) {
+	assignee, workspace, branch, project, session := "worker", "/work/tree", "feat/provenance", "project-x", "session-1"
+	summary, runSummary := "Latest verified checkpoint", "Worker reached tests"
+	runID, pid := int64(7), 4321
+	m := NewBoardModel(context.Background(), &fakeService{})
+	m.boards = []kanban.Board{{Slug: "alpha", Current: true}}
+	m.width, m.height = 160, 60
+	m.detail = &kanban.Detail{
+		Task:          kanban.Task{ID: "task", Title: "Current", Body: "body", Status: "running", CreatedBy: "orchestrator", Assignee: &assignee, WorkspaceKind: "worktree", WorkspacePath: &workspace, BranchName: &branch, ProjectID: &project, SessionID: &session, CurrentStepKey: strptr("verify")},
+		LatestSummary: &summary,
+		Parents:       []string{"parent"}, Children: []string{"child"},
+		Events: []kanban.Event{{Kind: "claimed", Payload: map[string]any{"profile": "worker"}, CreatedAt: 1700000000, RunID: &runID}},
+		Runs:   []kanban.Run{{ID: 7, Profile: "worker", Status: "running", Summary: &runSummary, WorkerPID: &pid, StartedAt: 1700000000}},
+	}
+	view := m.View()
+	for _, want := range []string{"Task", "task", "Current", "running", "Assignment", "worker", "orchestrator", "session-1", "project-x", "/work/tree", "feat/provenance", "Progress", "verify", summary, "Chain", "parent → task → child", "Audit timeline", "claimed", "run #7", runSummary} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q in detail:\n%s", want, view)
+		}
+	}
+}
+
+func TestCardsShowAssignmentAndCurrentProgress(t *testing.T) {
+	assignee, step := "worker", "verify"
+	m := NewBoardModel(context.Background(), &fakeService{})
+	m.boards = []kanban.Board{{Slug: "alpha", Current: true}}
+	m.tasks = []kanban.Task{{ID: "t1", Title: "ship", Status: "running", Assignee: &assignee, CurrentStepKey: &step}}
+	m.width, m.height, m.col = 240, 20, 3
+	view := m.View()
+	if !strings.Contains(view, "@worker") || !strings.Contains(view, "↳ verify") {
+		t.Fatalf("card lacks assignment/progress:\n%s", view)
+	}
+}
+
+func strptr(s string) *string { return &s }
 
 func TestViewFitsConfiguredViewport(t *testing.T) {
 	f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}}
@@ -238,6 +281,19 @@ func TestViewFitsConfiguredViewport(t *testing.T) {
 	}
 	if len(strings.Split(view, "\n")) > m.height {
 		t.Fatalf("view height exceeds %d:\n%s", m.height, view)
+	}
+}
+
+func TestDetailLinesFitConfiguredWidth(t *testing.T) {
+	long := strings.Repeat("x", 100)
+	m := NewBoardModel(context.Background(), &fakeService{})
+	m.boards = []kanban.Board{{Slug: "alpha", Current: true}}
+	m.width, m.height = 40, 30
+	m.detail = &kanban.Detail{Task: kanban.Task{ID: "t1", Body: long, WorkspacePath: &long}, Events: []kanban.Event{{Kind: "event", Payload: map[string]any{"value": long}}}}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if ansi.StringWidth(line) > m.width {
+			t.Fatalf("detail line width %d exceeds %d: %q", ansi.StringWidth(line), m.width, line)
+		}
 	}
 }
 

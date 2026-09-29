@@ -1,0 +1,51 @@
+{
+  "task": {
+    "id": "t_26af336a",
+    "title": "Define the xterm-kitty capability matrix",
+    "body": "Audit terminal support.",
+    "assignee": "default",
+    "status": "running",
+    "priority": 0,
+    "tenant": null,
+    "workspace_kind": "scratch",
+    "workspace_path": "/Users/sam/.hermes/kanban/workspaces/t_26af336a",
+    "branch_name": "feat/kitty",
+    "project_id": "herdr",
+    "created_by": "auto-decomposer",
+    "created_at": 1790683637,
+    "started_at": 1790683637,
+    "completed_at": null,
+    "result": null,
+    "skills": [],
+    "max_runtime_seconds": null,
+    "max_retries": null,
+    "model_override": null,
+    "provider_override": null,
+    "session_id": "20260929_worker",
+    "workflow_template_id": null,
+    "current_step_key": null,
+    "completion_contract": null,
+    "last_failure_error": null
+  },
+  "latest_summary": "Capability audit is in progress.",
+  "parents": ["t_309bfd07"],
+  "children": ["t_29d8eae9", "t_309bfd07"],
+  "comments": [{"author":"sam","body":"Keep fallbacks explicit.","created_at":1790683640}],
+  "events": [
+    {"kind":"created","payload":{"by":"auto-decomposer","from_decompose_of":"t_309bfd07"},"created_at":1790683637,"run_id":null},
+    {"kind":"claimed","payload":{"lock":"mbph:73037","expires":1790684537,"run_id":12},"created_at":1790683637,"run_id":12}
+  ],
+  "runs": [{
+    "id":12,
+    "profile":"default",
+    "step_key":null,
+    "status":"running",
+    "outcome":null,
+    "summary":"Inspecting terminal capabilities.",
+    "error":null,
+    "metadata":{"model":"gpt-5"},
+    "worker_pid":68110,
+    "started_at":1790683637,
+    "ended_at":null
+  }]
+}

@@ -1,6 +1,6 @@
 id = "hermes-kanban"
 name = "Hermes Kanban"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.1"
 description = "Terminal board and safe quick capture for Hermes Kanban"
 platforms = ["macos", "linux"]
@@ -24,12 +24,26 @@ width = "70%"
 height = 9
 command = ["./bin/herdr-kanban", "capture"]
 
+[[panes]]
+id = "board-overlay"
+title = "Hermes Kanban — Floating"
+description = "Browse Hermes Kanban in a floating overlay"
+placement = "overlay"
+command = ["./bin/herdr-kanban", "board"]
+
 [[actions]]
 id = "open-board"
 title = "Open Hermes Kanban"
 description = "Open the board in a regular Herdr tab"
 contexts = ["global", "workspace", "pane"]
 command = ["./bin/herdr-kanban", "open", "board"]
+
+[[actions]]
+id = "open-board-overlay"
+title = "Open Hermes Kanban — Floating"
+description = "Open the board in a floating Herdr overlay"
+contexts = ["global", "workspace", "pane"]
+command = ["./bin/herdr-kanban", "open", "board-overlay"]
 
 [[actions]]
 id = "quick-capture"

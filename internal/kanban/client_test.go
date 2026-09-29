@@ -101,6 +101,24 @@ func TestShowAcceptsNestedTaskShape(t *testing.T) {
 	}
 }
 
+func TestShowDecodesRealHermesFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/show.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := fakeClient(t, "show")
+	client.MaxOutput = 4096
+	client.Command = []string{"sh", "-c", "printf %s \"$SHOW_FIXTURE\"", "--"}
+	client.Env = append(client.Env, "SHOW_FIXTURE="+string(raw))
+	detail, err := client.Show(context.Background(), "default", "t_26af336a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Task.ID != "t_26af336a" || len(detail.Events) != 2 || len(detail.Runs) != 1 {
+		t.Fatalf("unexpected real detail: %#v", detail)
+	}
+}
+
 func TestCommentUsesEndOfOptionsForFlagLikeText(t *testing.T) {
 	out, err := fakeClient(t, "capture").Comment(context.Background(), "alpha", "t_1", "--force")
 	if err != nil {

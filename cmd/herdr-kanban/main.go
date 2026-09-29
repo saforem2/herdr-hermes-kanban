@@ -32,7 +32,7 @@ func run(args []string) error {
 		_, err := tea.NewProgram(ui.NewCaptureModel(ctx, client)).Run()
 		return err
 	case "open":
-		if len(args) != 2 || (args[1] != "board" && args[1] != "capture") {
+		if len(args) != 2 || (args[1] != "board" && args[1] != "board-overlay" && args[1] != "capture") {
 			return usage()
 		}
 		herdr := os.Getenv("HERDR_BIN_PATH")
@@ -52,8 +52,10 @@ func run(args []string) error {
 		return usage()
 	}
 }
-func usage() error { return fmt.Errorf("usage: herdr-kanban {board|capture|open board|open capture}") }
+func usage() error {
+	return fmt.Errorf("usage: herdr-kanban {board|capture|open board|open board-overlay|open capture}")
+}
 func usageText() error {
-	fmt.Println("usage: herdr-kanban {board|capture|open board|open capture}")
+	fmt.Println("usage: herdr-kanban {board|capture|open board|open board-overlay|open capture}")
 	return nil
 }

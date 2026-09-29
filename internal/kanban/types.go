@@ -53,10 +53,26 @@ type Comment struct {
 	CreatedAt int64  `json:"created_at"`
 }
 type Event struct {
-	Kind      string `json:"kind"`
-	Payload   any    `json:"payload"`
-	CreatedAt int64  `json:"created_at"`
+	Kind      string         `json:"kind"`
+	Payload   map[string]any `json:"payload"`
+	CreatedAt int64          `json:"created_at"`
+	RunID     *int64         `json:"run_id"`
 }
+
+type Run struct {
+	ID        int64          `json:"id"`
+	Profile   string         `json:"profile"`
+	StepKey   *string        `json:"step_key"`
+	Status    string         `json:"status"`
+	Outcome   *string        `json:"outcome"`
+	Summary   *string        `json:"summary"`
+	Error     *string        `json:"error"`
+	Metadata  map[string]any `json:"metadata"`
+	WorkerPID *int           `json:"worker_pid"`
+	StartedAt int64          `json:"started_at"`
+	EndedAt   *int64         `json:"ended_at"`
+}
+
 type Detail struct {
 	Task          Task      `json:"task"`
 	LatestSummary *string   `json:"latest_summary"`
@@ -64,5 +80,5 @@ type Detail struct {
 	Children      []string  `json:"children"`
 	Comments      []Comment `json:"comments"`
 	Events        []Event   `json:"events"`
-	Runs          []any     `json:"runs"`
+	Runs          []Run     `json:"runs"`
 }
