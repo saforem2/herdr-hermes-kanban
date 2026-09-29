@@ -273,15 +273,63 @@ func TestViewFitsConfiguredViewport(t *testing.T) {
 	}
 	m := NewBoardModel(context.Background(), f)
 	m.boards, m.tasks, m.width, m.height = f.boards, f.tasks, 46, 12
+	assertViewFits(t, m)
+}
+
+func TestSmallOverlayWithDetailFitsConfiguredViewport(t *testing.T) {
+	f := &fakeService{boards: []kanban.Board{{Slug: "alpha", Current: true}}}
+	for i := 0; i < 20; i++ {
+		f.tasks = append(f.tasks, kanban.Task{ID: fmt.Sprintf("t%d", i), Title: fmt.Sprintf("card-%d", i), Status: "done"})
+	}
+	m := NewBoardModel(context.Background(), f)
+	m.boards, m.tasks, m.width, m.height, m.col, m.row = f.boards, f.tasks, 46, 12, 7, 19
+	m.detail = &kanban.Detail{Task: f.tasks[19]}
+
+	view := assertViewFits(t, m)
+	for _, want := range []string{"done (20)", "card-19", "Details", "t19"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("small overlay omitted %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestViewFitsViewportWithInputAndError(t *testing.T) {
+	for _, height := range []int{6, 8, 12, 24} {
+		for _, withDetail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("height=%d/detail=%t", height, withDetail), func(t *testing.T) {
+				m := NewBoardModel(context.Background(), &fakeService{})
+				m.boards = []kanban.Board{{Slug: "alpha", Current: true}}
+				m.tasks = []kanban.Task{{ID: "t1", Title: "card", Status: "triage"}}
+				m.width, m.height, m.mode = 46, height, modeComment
+				m.input.SetValue("input")
+				m.err = fmt.Errorf("error")
+				if withDetail {
+					m.detail = &kanban.Detail{Task: m.tasks[0]}
+				}
+
+				view := assertViewFits(t, m)
+				for _, want := range []string{"input", "error"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("viewport omitted %q:\n%s", want, view)
+					}
+				}
+			})
+		}
+	}
+}
+
+func assertViewFits(t *testing.T, m BoardModel) string {
+	t.Helper()
 	view := m.View()
 	for _, line := range strings.Split(view, "\n") {
 		if ansi.StringWidth(line) > m.width {
 			t.Fatalf("line width %d exceeds %d: %q", ansi.StringWidth(line), m.width, line)
 		}
 	}
-	if len(strings.Split(view, "\n")) > m.height {
-		t.Fatalf("view height exceeds %d:\n%s", m.height, view)
+	if lines := len(strings.Split(view, "\n")); lines > m.height {
+		t.Fatalf("view has %d lines, exceeds height %d:\n%s", lines, m.height, view)
 	}
+	return view
 }
 
 func TestDetailLinesFitConfiguredWidth(t *testing.T) {

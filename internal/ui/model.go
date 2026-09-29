@@ -323,17 +323,54 @@ func has(v []string, s string) bool {
 }
 func (m BoardModel) View() string {
 	if len(m.boards) == 0 {
-		return "Hermes Kanban\n\nLoading boards…"
+		return fitView([]string{"Hermes Kanban", "", "Loading boards…"}, m.width, m.height)
 	}
-	var b strings.Builder
-	header := fmt.Sprintf("%s  board: %s  %s", headerStyle.Render("Hermes Kanban"), sanitizeLine(m.boardSlug()), dimStyle.Render("[ / ] switch"))
-	b.WriteString(ansi.Truncate(header, max(1, m.width), "…") + "\n\n")
+
+	help := "h/l columns  j/k cards  enter details  pgup/pgdown details  n new triage  c comment  s status  r refresh  q quit"
+	footer := []string{}
+	if m.mode != modeBoard {
+		footer = append(footer, m.input.View())
+	}
+	if m.err != nil {
+		footer = append(footer, errorStyle.Render(sanitizeLine(m.err.Error())))
+	}
+	footer = append(footer, dimStyle.Render(help))
+
+	height := m.height
+	if height <= 0 {
+		height = 1 << 20
+	}
+	available := max(0, height-len(footer))
+	lines := make([]string, 0, min(height, 64))
+	if available > 0 {
+		header := fmt.Sprintf("%s  board: %s  %s", headerStyle.Render("Hermes Kanban"), sanitizeLine(m.boardSlug()), dimStyle.Render("[ / ] switch"))
+		lines = append(lines, header)
+		available--
+	}
+
+	boardBudget, detailBudget := available, 0
+	if m.detail != nil && available >= 4 {
+		detailBudget = min(available-2, max(2, m.height/3+1))
+		boardBudget = available - detailBudget
+	}
+	if boardBudget > 0 {
+		lines = append(lines, m.renderBoard(boardBudget)...)
+	}
+	if detailBudget > 0 {
+		lines = append(lines, m.renderDetailViewport(detailBudget)...)
+	}
+	lines = append(lines, footer...)
+	return fitView(lines, m.width, m.height)
+}
+
+func (m BoardModel) renderBoard(lineBudget int) []string {
 	columnWidth := 22
 	if m.width > 0 && m.width/len(Columns) > columnWidth+1 {
 		columnWidth = m.width/len(Columns) - 1
 	}
 	firstCol, lastCol := visibleColumns(m.col, m.width, columnWidth)
 	panels := make([]string, 0, lastCol-firstCol)
+	visibleRows := max(1, (lineBudget-1)/2)
 	for ci := firstCol; ci < lastCol; ci++ {
 		col := Columns[ci]
 		style := headerStyle
@@ -341,64 +378,64 @@ func (m BoardModel) View() string {
 			style = activeStyle
 		}
 		cards := []string{style.Render(fmt.Sprintf("%s (%d)", col, countStatus(m.tasks, col)))}
-		visibleRows := max(1, (m.height-5)/3)
 		startRow := 0
 		if ci == m.col {
 			startRow = max(0, m.row-visibleRows+1)
 		}
 		row := 0
 		for _, t := range m.tasks {
-			if t.Status == col {
-				if row < startRow || row >= startRow+visibleRows {
-					row++
-					continue
-				}
-				mark := "  "
-				if ci == m.col {
-					selected, _ := m.selected()
-					if selected.ID == t.ID {
-						mark = "> "
-					}
-				}
-				meta := "  " + sanitizeLine(t.ID)
-				if t.Assignee != nil && *t.Assignee != "" {
-					meta = "  @" + sanitizeLine(*t.Assignee)
-				}
-				if t.CurrentStepKey != nil && *t.CurrentStepKey != "" {
-					meta += " ↳ " + sanitizeLine(*t.CurrentStepKey)
-				}
-				cards = append(cards, mark+lipgloss.NewStyle().MaxWidth(columnWidth-2).Render(sanitizeLine(t.Title)), dimStyle.Render(ansi.Truncate(meta, columnWidth-2, "…")))
-				row++
+			if t.Status != col {
+				continue
 			}
+			if row < startRow || row >= startRow+visibleRows {
+				row++
+				continue
+			}
+			mark := "  "
+			if ci == m.col {
+				selected, _ := m.selected()
+				if selected.ID == t.ID {
+					mark = "> "
+				}
+			}
+			meta := "  " + sanitizeLine(t.ID)
+			if t.Assignee != nil && *t.Assignee != "" {
+				meta = "  @" + sanitizeLine(*t.Assignee)
+			}
+			if t.CurrentStepKey != nil && *t.CurrentStepKey != "" {
+				meta += " ↳ " + sanitizeLine(*t.CurrentStepKey)
+			}
+			cards = append(cards, mark+lipgloss.NewStyle().MaxWidth(columnWidth-2).Render(sanitizeLine(t.Title)), dimStyle.Render(ansi.Truncate(meta, columnWidth-2, "…")))
+			row++
 		}
 		if len(cards) == 1 {
 			cards = append(cards, dimStyle.Render("  —"))
 		}
+		cards = cards[:min(len(cards), lineBudget)]
 		panels = append(panels, lipgloss.NewStyle().Width(columnWidth).PaddingRight(1).Render(strings.Join(cards, "\n")))
 	}
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panels...))
-	b.WriteString("\n\n")
-	if m.detail != nil {
-		detailLines := renderDetail(*m.detail)
-		if m.width > 0 {
-			for i := range detailLines {
-				detailLines[i] = ansi.Truncate(detailLines[i], m.width, "…")
-			}
+	return strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, panels...), "\n")
+}
+
+func (m BoardModel) renderDetailViewport(lineBudget int) []string {
+	detailLines := renderDetail(*m.detail)
+	page := max(1, lineBudget-1)
+	maxOffset := max(0, len(detailLines)-page)
+	offset := min(m.detailOffset, maxOffset)
+	lines := []string{headerStyle.Render("Details")}
+	return append(lines, detailLines[offset:min(len(detailLines), offset+page)]...)
+}
+
+func fitView(lines []string, width, height int) string {
+	if height > 0 && len(lines) > height {
+		lines = lines[:height]
+	}
+	if width > 0 {
+		for i := range lines {
+			lines[i] = ansi.Truncate(lines[i], width, "…")
 		}
-		page := max(1, m.height/3)
-		maxOffset := max(0, len(detailLines)-page)
-		offset := min(m.detailOffset, maxOffset)
-		fmt.Fprintf(&b, "%s\n%s\n", headerStyle.Render("Details"), strings.Join(detailLines[offset:min(len(detailLines), offset+page)], "\n"))
 	}
-	if m.mode != modeBoard {
-		fmt.Fprintf(&b, "\n%s\n", m.input.View())
-	}
-	if m.err != nil {
-		fmt.Fprintf(&b, "\n%s\n", errorStyle.Render(sanitize(m.err.Error())))
-	}
-	help := "h/l columns  j/k cards  enter details  pgup/pgdown details  n new triage  c comment  s status  r refresh  q quit"
-	b.WriteString(dimStyle.Render(ansi.Truncate(help, max(1, m.width), "…")))
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 func renderDetail(d kanban.Detail) []string {
